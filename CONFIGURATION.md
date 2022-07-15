@@ -267,6 +267,11 @@ validate_additional_rrs:
 # to determine when network routing has changed.
 [ ttl: <int> ]
 
+# The number of packets per query. Default value is 1. Value must be in the range [1, 30].
+# Can be used to monitor packet loss on the channel or specific itinerary, for example,
+# to determine some deterioration on the channel/itinerary.
+[ packets: <int> ]
+
 ```
 
 ### <grpc_probe>
