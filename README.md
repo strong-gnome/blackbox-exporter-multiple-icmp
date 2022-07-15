@@ -5,18 +5,9 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/prom/blackbox-exporter.svg?maxAge=604800)][hub]
 
 The blackbox exporter allows blackbox probing of endpoints over
-HTTP, HTTPS, DNS, TCP, ICMP and gRPC.
+HTTP, HTTPS, DNS, TCP, ICMP (single or multiple probes at one query) and gRPC.
 
 ## Running this software
-
-### From binaries
-
-Download the most suitable binary from [the releases tab](https://github.com/prometheus/blackbox_exporter/releases)
-
-Then:
-
-    ./blackbox_exporter <flags>
-
 
 ### Using the docker image
 
