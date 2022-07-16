@@ -36,14 +36,24 @@ Note that the TLS and basic authentication settings affect all HTTP endpoints:
 
 ## Building the software
 
+### Prepare binary file for building
+
+At first you have to compile binary file from .go code. Use command below at directory with main.go file (install golang package in case it's absence).
+
+    go build   
+
+After you get the compiled binary, you're able to move ahead with building.
+
 ### Local Build
+
+You have to run "make" command from the directory with Makefile and compiled binary.
 
     make
 
 
 ### Building with Docker
 
-After a successful local build:
+After a successful compilation use below:
 
     docker build -t blackbox_exporter .
 
