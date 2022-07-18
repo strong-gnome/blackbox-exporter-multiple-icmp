@@ -33,13 +33,13 @@ import (
 )
 
 var (
-	icmp_duration_rtt []int64
-	icmp_reply_ttl []int
+	icmp_duration_rtt  []int64
+	icmp_reply_ttl     []int
 	icmp_success_probe []int
-	isSuccess bool
-	icmp_aver_rtt float32
-	icmp_aver_ttl int
-	icmp_packet_loss float32
+	isSuccess          bool
+	icmp_aver_rtt      float32
+	icmp_aver_ttl      int
+	icmp_packet_loss   float32
 )
 
 func get_icmp_meta() (int, uint16) {
@@ -48,7 +48,7 @@ func get_icmp_meta() (int, uint16) {
 	// Set the ICMP echo ID to a random value to avoid potential clashes with
 	// other blackbox_exporter instances. See #411.
 	icmpID = r.Intn(1 << 16)
-	
+
 	// Start the ICMP echo sequence at a random offset to prevent them from
 	// being in sync when several blackbox_exporter instances are restarted
 	// at the same time. See #411.
@@ -60,22 +60,26 @@ func get_icmp_meta() (int, uint16) {
 // Main func to initiate icmp probe or probes - depends on "packets" value.
 func ProbeICMP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) (success bool) {
 	var (
-		packets int
-		wg sync.WaitGroup
+		packets       int
+		wg            sync.WaitGroup
 		durationGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_rtt_seconds",
-			Help: "Round Trip Time for icmp probe",
+			Name: "probe_icmp_rtt_milliseconds",
+			Help: "Round Trip Time (ms) for icmp probe",
 		})
 
 		ttlGauge = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "probe_icmp_reply_ttl",
-			Help: "Replied packet thop limi (TTL for ipv4)", //ADJUST
+			Help: "Replied packet hop limit for ipv6 (TTL for ipv4)",
 		})
 
 		packetLossGauge = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "probe_icmp_packet_loss",
 			Help: "Percent of lost packets or failed attempts (due to any reason)",
 		})
+		packetsGauge = prometheus.NewGauge((prometheus.GaugeOpts{
+			Name: "probe_icmp_packets",
+			Help: "How many packets are being send per query",
+		}))
 	)
 
 	dstIPAddr, _, err := chooseProtocol(ctx, module.ICMP.IPProtocol, module.ICMP.IPProtocolFallback, target, registry, logger)
@@ -85,21 +89,19 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 		return false
 	}
 
-	if module.ICMP.Packets == 0 {
-		packets = 1
-	} else {
-		packets = module.ICMP.Packets
-	}
+	packets = module.ICMP.Packets
 
 	registry.MustRegister(durationGauge)
 	registry.MustRegister(ttlGauge)
 	registry.MustRegister(packetLossGauge)
+	registry.MustRegister(packetsGauge)
 
 	MultipleICMP(ctx, target, module, registry, logger, &wg, dstIPAddr, packets)
 
 	durationGauge.Add(float64(icmp_aver_rtt))
 	ttlGauge.Add(float64(icmp_aver_ttl))
 	packetLossGauge.Add(float64(icmp_packet_loss))
+	packetsGauge.Add(float64(packets))
 
 	return isSuccess
 }
@@ -114,7 +116,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 	// Run multiple probes (or just one)
 	for x := 0; x < packets; x++ {
 		wg.Add(1)
-		time.Sleep(time.Duration(x) * 10 * time.Millisecond)
+		time.Sleep(time.Duration(x) * time.Millisecond)
 		go ProbeSingleICMP(ctx, target, module, registry, logger, wg, dstIPAddr)
 	}
 
@@ -126,7 +128,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 	}
 	if summ_value > 0 {
 		isSuccess = true
-		icmp_packet_loss = 100 - summ_value/float32(len_values) * 100
+		icmp_packet_loss = 100 - summ_value/float32(len_values)*100
 	} else {
 		isSuccess = false
 		icmp_packet_loss = 100
@@ -138,7 +140,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 	for _, rtt := range icmp_duration_rtt {
 		summ_value += float32(rtt)
 	}
-	icmp_aver_rtt = summ_value/float32(len_values)
+	icmp_aver_rtt = summ_value / float32(len_values)
 
 	// Start to calculate average value of ttl on returned packets
 	summ_value = 0
@@ -146,7 +148,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 	for _, ttl := range icmp_reply_ttl {
 		summ_value += float32(ttl)
 	}
-	icmp_aver_ttl = int(summ_value/float32(len_values))
+	icmp_aver_ttl = int(summ_value / float32(len_values))
 
 	return
 }
@@ -159,9 +161,9 @@ func ProbeSingleICMP(ctx context.Context, target string, module config.Module, r
 		icmpConn        *icmp.PacketConn
 		v4RawConn       *ipv4.RawConn
 		hopLimitFlagSet bool = true
-		err error
+		err             error
 	)
-	
+
 	var srcIP net.IP
 	if len(module.ICMP.SourceIPAddress) > 0 {
 		if srcIP = net.ParseIP(module.ICMP.SourceIPAddress); srcIP == nil {
