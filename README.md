@@ -36,26 +36,20 @@ Note that the TLS and basic authentication settings affect all HTTP endpoints:
 
 ## Building the software
 
-### Prepare binary file for building
-
-At first you have to compile binary file from .go code. Use command below at directory with main.go file (install golang package in case it's absence).
-
-    go build   
-
-After you get the compiled binary, you're able to move ahead with building.
-
-### Local Build
-
-You have to run "make" command from the directory with Makefile and compiled binary.
-
-    make
-
-
 ### Building with Docker
 
-After a successful compilation use below:
+Please be aware, that local container will be built inside *golang:alpine* container, which will build binary from .go. Second action needs working Internet connection to pull public *golang* libs (like [prometheus/common](https://github.com/prometheus/common) and etc).
+In case you don't have access to libs, but you are able to build binary locally, then use next order of commands:
 
+    go build -o ./blackbox_exporter
+    cp Dockerfile_build_in_local Dockerfile
+    docker build -t name-of-your-image:some-tag .
+
+To build a container from *golang:alpine* use cmds below.
+
+    cp Dockerfile_build_in_container Dockerfile
     docker build -t blackbox_exporter .
+
 
 ## [Configuration](CONFIGURATION.md)
 
