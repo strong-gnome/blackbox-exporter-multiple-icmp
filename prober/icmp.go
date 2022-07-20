@@ -96,18 +96,22 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 	registry.MustRegister(packetLossGauge)
 	registry.MustRegister(packetsGauge)
 
-	MultipleICMP(ctx, target, module, registry, logger, &wg, dstIPAddr, packets)
+	MultipleICMP(ctx, module, logger, &wg, dstIPAddr, packets)
 
 	durationGauge.Add(float64(icmp_aver_rtt))
 	ttlGauge.Add(float64(icmp_aver_ttl))
 	packetLossGauge.Add(float64(icmp_packet_loss))
 	packetsGauge.Add(float64(packets))
+	
+	icmp_duration_rtt = icmp_duration_rtt[:0]
+	icmp_reply_ttl = icmp_reply_ttl[:0]
+	icmp_success_probe = icmp_success_probe[:0]
 
 	return isSuccess
 }
 
 // Handle few icmp probes concurrently and count packet loss percent
-func MultipleICMP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr, packets int) {
+func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr, packets int) {
 	var (
 		summ_value float32
 		len_values int
@@ -117,7 +121,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 	for x := 0; x < packets; x++ {
 		wg.Add(1)
 		time.Sleep(time.Duration(x) * time.Millisecond)
-		go ProbeSingleICMP(ctx, target, module, registry, logger, wg, dstIPAddr)
+		go ProbeSingleICMP(ctx, module, logger, wg, dstIPAddr)
 	}
 
 	// Start to calculate average value of packet loss + success for the probe at all
@@ -154,7 +158,7 @@ func MultipleICMP(ctx context.Context, target string, module config.Module, regi
 }
 
 // Run single icmp probe
-func ProbeSingleICMP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr) {
+func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr) {
 	var (
 		requestType     icmp.Type
 		replyType       icmp.Type
