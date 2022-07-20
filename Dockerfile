@@ -1,13 +1,13 @@
-ARG ARCH="amd64"
-ARG OS="linux"
-FROM quay.io/prometheus/busybox-${OS}-${ARCH}:latest
-LABEL maintainer="The Prometheus Authors <prometheus-developers@googlegroups.com>"
+FROM golang:alpine as builder
 
-ARG ARCH="amd64"
-ARG OS="linux"
-COPY .build/${OS}-${ARCH}/blackbox_exporter  /bin/blackbox_exporter
-COPY blackbox.yml       /etc/blackbox_exporter/config.yml
+ADD     ./   /etc/bb-pre-build/
+WORKDIR /etc/bb-pre-build
+RUN go build -o /etc/bb-pre-build/blackbox-exporter
 
-EXPOSE      9115
-ENTRYPOINT  [ "/bin/blackbox_exporter" ]
-CMD         [ "--config.file=/etc/blackbox_exporter/config.yml" ]
+FROM alpine:latest
+COPY --from=builder /etc/bb-pre-build/blackbox-exporter /bin/blackbox-exporter
+COPY --from=builder /etc/bb-pre-build/blackbox.yml      /etc/blackbox_exporter/config.yml
+
+EXPOSE 9115
+ENTRYPOINT [ "/bin/blackbox-exporter" ]
+CMD        [ "--config.file=/etc/blackbox_exporter/config.yml" ]
