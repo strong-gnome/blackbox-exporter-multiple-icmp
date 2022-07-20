@@ -49,3 +49,9 @@ modules:
     timeout: 5s
     icmp:
       ttl: 5
+  icmp_packets5:
+    prober: icmp
+    timeout: 2s
+    icmp:
+      preferred_ip_protocol: "ipv4"
+      packets: 5
