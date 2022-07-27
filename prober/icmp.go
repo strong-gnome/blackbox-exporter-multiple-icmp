@@ -41,6 +41,7 @@ var (
 	icmp_aver_rtt      float32
 	icmp_aver_ttl      int
 	icmp_packet_loss   float32
+	icmp_jitter		   float32 = 0
 )
 
 func get_icmp_meta() (int, uint16) {
@@ -88,6 +89,10 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 			Name: "probe_icmp_packets",
 			Help: "How many packets are being send per query",
 		}))
+		jitterGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "probe_icmp_jitter",
+			Help: "Returns jitter between highest and lowest RTT in series (works only if packets are more than 1)",
+		})
 	)
 
 	dstIPAddr, _, err := chooseProtocol(ctx, module.ICMP.IPProtocol, module.ICMP.IPProtocolFallback, target, registry, logger)
@@ -103,6 +108,10 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 	registry.MustRegister(ttlGauge)
 	registry.MustRegister(packetLossGauge)
 	registry.MustRegister(packetsGauge)
+	if packets > 1 {
+		registry.MustRegister(jitterGauge)
+	}
+
 
 	MultipleICMP(ctx, module, logger, &wg, dstIPAddr, packets)
 
@@ -110,6 +119,9 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 	ttlGauge.Add(float64(icmp_aver_ttl))
 	packetLossGauge.Add(float64(icmp_packet_loss))
 	packetsGauge.Add(float64(packets))
+	if packets > 1 {
+		jitterGauge.Add(float64(icmp_jitter))
+	}
 
 	icmp_duration_rtt = nil
 	icmp_reply_ttl = nil
@@ -123,12 +135,14 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 	var (
 		summ_value float32
 		len_values int
+		max_value  int = 0
+		min_value  int = 0
 	)
 
 	// Run multiple probes (or just one)
 	for x := 0; x < packets; x++ {
 		wg.Add(1)
-		time.Sleep(time.Duration(x) * time.Millisecond)
+		time.Sleep(time.Duration(x+1) * time.Millisecond)
 		go ProbeSingleICMP(ctx, module, logger, wg, dstIPAddr)
 	}
 
@@ -151,6 +165,8 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 	len_values = len(icmp_duration_rtt)
 	for _, rtt := range icmp_duration_rtt {
 		summ_value += float32(rtt)
+		if rtt > max {max = rtt}
+		if rtt < min {min = rtt}
 	}
 	icmp_aver_rtt = summ_value / float32(len_values)
 
@@ -161,6 +177,9 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 		summ_value += float32(ttl)
 	}
 	icmp_aver_ttl = int(summ_value / float32(len_values))
+
+	// Start to calculate jitter
+	icmp_jitter = float32(max_value) - float32(min_value)
 
 	return
 }
