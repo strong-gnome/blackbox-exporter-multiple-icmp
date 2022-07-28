@@ -41,7 +41,8 @@ var (
 	icmp_aver_rtt      float32
 	icmp_aver_ttl      int
 	icmp_packet_loss   float32
-	icmp_jitter        float32 = 0
+	icmp_jitterMax     float32 = 0
+	icmp_jitterMin     float32 = 0
 )
 
 func get_icmp_meta() (int, uint16) {
@@ -89,8 +90,8 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 			Name: "probe_icmp_packets",
 			Help: "How many packets are being send per query",
 		}))
-		jitterGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_jitter",
+		jitterMaxGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "probe_icmp_jitterMax",
 			Help: "Returns jitter between highest and lowest RTT in series (works only if packets are more than 1)",
 		})
 	)
@@ -109,7 +110,7 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 	registry.MustRegister(packetLossGauge)
 	registry.MustRegister(packetsGauge)
 	if packets > 1 {
-		registry.MustRegister(jitterGauge)
+		registry.MustRegister(jitterMaxGauge)
 	}
 
 	MultipleICMP(ctx, module, logger, &wg, dstIPAddr, packets)
@@ -119,7 +120,7 @@ func ProbeICMP(ctx context.Context, target string, module config.Module, registr
 	packetLossGauge.Add(float64(icmp_packet_loss))
 	packetsGauge.Add(float64(packets))
 	if packets > 1 {
-		jitterGauge.Add(float64(icmp_jitter))
+		jitterMaxGauge.Add(float64(icmp_jitterMax))
 	}
 
 	icmp_duration_rtt = nil
@@ -135,7 +136,7 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 		summ_value float32
 		len_values int
 		max_value  int = 0
-		min_value  int = 0
+		min_value  int = 10000
 	)
 
 	// Run multiple probes (or just one)
@@ -182,7 +183,7 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 	icmp_aver_ttl = int(summ_value / float32(len_values))
 
 	// Start to calculate jitter
-	icmp_jitter = float32(max_value) - float32(min_value)
+	icmp_jitterMax = float32(max_value) - float32(min_value)
 
 	return
 }
