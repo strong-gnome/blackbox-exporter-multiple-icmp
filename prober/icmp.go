@@ -42,7 +42,6 @@ var (
 	icmp_aver_ttl      int
 	icmp_packet_loss   float32
 	icmp_jitterMax     float32 = 0
-	icmp_jitterMin     float32 = 0
 )
 
 func get_icmp_meta() (int, uint16) {
