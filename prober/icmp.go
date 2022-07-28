@@ -164,11 +164,11 @@ func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, 
 	len_values = len(icmp_duration_rtt)
 	for _, rtt := range icmp_duration_rtt {
 		summ_value += float32(rtt)
-		if rtt > max {
-			max = rtt
+		if rtt > max_value {
+			max_value = rtt
 		}
-		if rtt < min {
-			min = rtt
+		if rtt < min_value {
+			min_value = rtt
 		}
 	}
 	icmp_aver_rtt = summ_value / float32(len_values)
