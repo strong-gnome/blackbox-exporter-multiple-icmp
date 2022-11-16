@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"encoding/json"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -77,12 +78,12 @@ var (
 	}
 
 	// DefaultICMPProbe set default value for ICMPProbe
-	DefaultICMPTTL   = 64
+	DefaultICMPTTL     = 64
 	DefualtICMPPackets = 1
-	DefaultICMPProbe = ICMPProbe{
+	DefaultICMPProbe   = ICMPProbe{
 		IPProtocolFallback: true,
 		TTL:                DefaultICMPTTL,
-		Packets:			DefualtICMPPackets,
+		Packets:            DefualtICMPPackets,
 	}
 
 	// DefaultDNSProbe set default value for DNSProbe
@@ -273,6 +274,7 @@ type ICMPProbe struct {
 	DontFragment       bool   `yaml:"dont_fragment,omitempty"`
 	TTL                int    `yaml:"ttl,omitempty"`
 	Packets            int    `yaml:"packets,omitempty"`
+	Delay              int    `yaml:"delay,omitempty"`
 }
 
 type DNSProbe struct {
@@ -432,6 +434,12 @@ func (s *ICMPProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 	if s.Packets > 30 {
 		return errors.New("\"packets\" cannot exceed 30")
+	}
+	if s.Delay < 1 {
+		return errors.New("\"delay\" cannot be less than 1ms")
+	}
+	if s.Delay > 200 {
+		return errors.New("\"delay\" cannot be more than 200ms")
 	}
 	return nil
 }
