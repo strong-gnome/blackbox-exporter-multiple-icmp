@@ -196,6 +196,15 @@ func MustNewRegexp(s string) Regexp {
 	return re
 }
 
+type JSONstruct struct {
+	proberJSON      string                 `json:"Prober"`
+	success         int                    `json:"Success"`
+	duration        int                    `json:"ProbeDuration,omitempty"`
+	dns_lookup_time float64                `json:"DNSLookupTime,omitempty"`
+	probe_protocol  int                    `json:"ProbeProtocol,omitempty"`
+	probe_metrics   map[string]interface{} `json:"ProbeMetrics"`
+}
+
 type Module struct {
 	Prober  string        `yaml:"prober,omitempty"`
 	Timeout time.Duration `yaml:"timeout,omitempty"`
