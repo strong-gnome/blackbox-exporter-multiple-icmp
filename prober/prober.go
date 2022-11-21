@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,9 +16,8 @@ import (
 	"context"
 
 	"github.com/go-kit/log"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/prometheus/blackbox_exporter/config"
 )
 
-type ProbeFn func(ctx context.Context, target string, config config.Module, registry *prometheus.Registry, logger log.Logger) bool
+type ProbeFn func(ctx context.Context, target string, config config.Module, json_result *config.JSONstruct, logger log.Logger) bool

@@ -37,6 +37,13 @@ The other placeholders are specified separately.
 ### <http_probe>
 ```yml
 
+  ###
+  ### Please note that http module is temporary out of support with JSON output.
+  ### The limitation will be winded up in Q4 2022.
+  ###
+
+
+
   # Accepted status codes for this probe. Defaults to 2xx.
   [ valid_status_codes: <int>, ... | default = 2xx ]
 
@@ -271,6 +278,9 @@ validate_additional_rrs:
 # Can be used to monitor packet loss on the channel or specific itinerary, for example,
 # to determine some deterioration on the channel/itinerary.
 [ packets: <int> ]
+
+# The delay between each icmp probe send in case multiple probes are handled per query. Default value is 1. Value must be in the range [1, 200].
+[ delay: <int> ]
 
 ```
 

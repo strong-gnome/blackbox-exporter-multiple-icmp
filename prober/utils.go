@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,14 +15,13 @@ package prober
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"net"
 	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/blackbox_exporter/config"
 )
 
 var protocolToGauge = map[string]float64{
@@ -32,25 +30,8 @@ var protocolToGauge = map[string]float64{
 }
 
 // Returns the IP for the IPProtocol and lookup time.
-func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol bool, target string, registry *prometheus.Registry, logger log.Logger) (ip *net.IPAddr, lookupTime float64, err error) {
+func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol bool, target string, some_json *config.JSONstruct, logger log.Logger) (ip *net.IPAddr, lookupTime float64, err error) {
 	var fallbackProtocol string
-	probeDNSLookupTimeSeconds := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_dns_lookup_time_seconds",
-		Help: "Returns the time taken for probe dns lookup in seconds",
-	})
-
-	probeIPProtocolGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_ip_protocol",
-		Help: "Specifies whether probe ip protocol is IP4 or IP6",
-	})
-
-	probeIPAddrHash := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_ip_addr_hash",
-		Help: "Specifies the hash of IP address. It's useful to detect if the IP address changes.",
-	})
-	registry.MustRegister(probeIPProtocolGauge)
-	registry.MustRegister(probeDNSLookupTimeSeconds)
-	registry.MustRegister(probeIPAddrHash)
 
 	if IPProtocol == "ip6" || IPProtocol == "" {
 		IPProtocol = "ip6"
@@ -65,7 +46,7 @@ func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol b
 
 	defer func() {
 		lookupTime = time.Since(resolveStart).Seconds()
-		probeDNSLookupTimeSeconds.Add(lookupTime)
+		some_json.Dns_lookup_time = lookupTime
 	}()
 
 	resolver := &net.Resolver{}
@@ -74,8 +55,6 @@ func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol b
 		if err == nil {
 			for _, ip := range ips {
 				level.Info(logger).Log("msg", "Resolved target address", "target", target, "ip", ip.String())
-				probeIPProtocolGauge.Set(protocolToGauge[IPProtocol])
-				probeIPAddrHash.Set(ipHash(ip))
 				return &net.IPAddr{IP: ip}, lookupTime, nil
 			}
 		}
@@ -96,8 +75,7 @@ func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol b
 		case "ip4":
 			if ip.IP.To4() != nil {
 				level.Info(logger).Log("msg", "Resolved target address", "target", target, "ip", ip.String())
-				probeIPProtocolGauge.Set(4)
-				probeIPAddrHash.Set(ipHash(ip.IP))
+				some_json.Probe_protocol = 4
 				return &ip, lookupTime, nil
 			}
 
@@ -107,8 +85,7 @@ func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol b
 		case "ip6":
 			if ip.IP.To4() == nil {
 				level.Info(logger).Log("msg", "Resolved target address", "target", target, "ip", ip.String())
-				probeIPProtocolGauge.Set(6)
-				probeIPAddrHash.Set(ipHash(ip.IP))
+				some_json.Probe_protocol = 6
 				return &ip, lookupTime, nil
 			}
 
@@ -124,21 +101,10 @@ func chooseProtocol(ctx context.Context, IPProtocol string, fallbackIPProtocol b
 
 	// Use fallback ip protocol.
 	if fallbackProtocol == "ip4" {
-		probeIPProtocolGauge.Set(4)
+		some_json.Probe_protocol = 4
 	} else {
-		probeIPProtocolGauge.Set(6)
+		some_json.Probe_protocol = 6
 	}
-	probeIPAddrHash.Set(ipHash(fallback.IP))
 	level.Info(logger).Log("msg", "Resolved target address", "target", target, "ip", fallback.String())
 	return fallback, lookupTime, nil
-}
-
-func ipHash(ip net.IP) float64 {
-	h := fnv.New32a()
-	if ip.To4() != nil {
-		h.Write(ip.To4())
-	} else {
-		h.Write(ip.To16())
-	}
-	return float64(h.Sum32())
 }

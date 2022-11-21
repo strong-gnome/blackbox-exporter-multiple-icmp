@@ -1,5 +1,7 @@
 # Blackbox exporter
 
+
+
 The blackbox exporter allows blackbox probing of endpoints over
 HTTP, HTTPS, DNS, TCP, ICMP (single or multiple probes at one query) and gRPC.
 
@@ -9,12 +11,12 @@ HTTP, HTTPS, DNS, TCP, ICMP (single or multiple probes at one query) and gRPC.
 
 *Note: You may want to [enable ipv6 in your docker configuration](https://docs.docker.com/v17.09/engine/userguide/networking/default_network/ipv6/)*
 
-    docker run --rm -d -p 9115:9115 --name blackbox_exporter -v `pwd`:/config prom/blackbox-exporter:master --config.file=/config/blackbox.yml
+    docker run -p 9115:9115 --name blackbox_exporter --config.file=/config/blackbox.yml
 
 ### Checking the results
 
-Visiting [http://localhost:9115/probe?target=google.com&module=http_2xx](http://localhost:9115/probe?target=google.com&module=http_2xx)
-will return metrics for a HTTP probe against google.com. The `probe_success`
+Visiting [http://localhost:9115/probe?target=google.com&module=icmp](http://localhost:9115/probe?target=google.com&module=icmp)
+will return metrics for a ICMP probe against google.com. The `Success`
 metric indicates if the probe succeeded. Adding a `debug=true` parameter
 will return debug information for that probe.
 
@@ -58,71 +60,11 @@ To view all available command-line flags, run `./blackbox_exporter -h`.
 
 To specify which [configuration file](CONFIGURATION.md) to load, use the `--config.file` flag.
 
-Additionally, an [example configuration](example.yml) is also available.
+Additionally, an [example configuration](blackbox.yml) is also available.
 
-HTTP, HTTPS (via the `http` prober), DNS, TCP socket, ICMP and gRPC (see permissions section) are currently supported.
-Additional modules can be defined to meet your needs.
+DNS, TCP socket, ICMP and gRPC (see permissions section) are currently supported. HTTP, HTTPS (via the `http` prober) are temporary unsupported.
 
-The timeout of each probe is automatically determined from the `scrape_timeout` in the [Prometheus config](https://prometheus.io/docs/operating/configuration/#configuration-file), slightly reduced to allow for network delays. 
 This can be further limited by the `timeout` in the Blackbox exporter config file. If neither is specified, it defaults to 120 seconds.
-
-## Prometheus Configuration
-
-Blackbox exporter implements the multi-target exporter pattern, so we advice
-to read the guide [Understanding and using the multi-target exporter pattern
-](https://prometheus.io/docs/guides/multi-target-exporter/) to get the general
-idea about the configuration.
-
-The blackbox exporter needs to be passed the target as a parameter, this can be
-done with relabelling.
-
-Example config:
-```yml
-scrape_configs:
-  - job_name: 'blackbox'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]  # Look for a HTTP 200 response.
-    static_configs:
-      - targets:
-        - http://prometheus.io    # Target to probe with http.
-        - https://prometheus.io   # Target to probe with https.
-        - http://example.com:8080 # Target to probe with http on port 8080.
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: 127.0.0.1:9115  # The blackbox exporter's real hostname:port.
-```
-
-HTTP probes can accept an additional `hostname` parameter that will set `Host` header and TLS SNI. This can be especially useful with `dns_sd_config`:
-```yaml
-scrape_configs:
-  - job_name: blackbox_all
-    metrics_path: /probe
-    params:
-      module: [ http_2xx ]  # Look for a HTTP 200 response.
-    dns_sd_configs:
-      - names:
-          - example.com
-          - prometheus.io
-        type: A
-        port: 443
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-        replacement: https://$1/  # Make probe URL be like https://1.2.3.4:443/
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: 127.0.0.1:9115  # The blackbox exporter's real hostname:port.
-      - source_labels: [__meta_dns_name]
-        target_label: __param_hostname  # Make domain name become 'Host' header for probe requests
-      - source_labels: [__meta_dns_name]
-        target_label: vhost  # and store it in 'vhost' label
-```
 
 ## Permissions
 
@@ -140,4 +82,4 @@ The ICMP probe requires elevated privileges to function:
 * *BSD*: root user is required.
 * *OS X*: No additional privileges are needed.
 
-[hub]: https://hub.docker.com/repository/docker/ggadyuchenko/blackbox-exporter-mip
+[hub]: https://hub.docker.com/r/ggadyuchenko/blackbox-json

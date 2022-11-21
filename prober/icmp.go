@@ -1,16 +1,3 @@
-// Copyright 2016 The Prometheus Authors
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package prober
 
 import (
@@ -19,29 +6,15 @@ import (
 	"math/rand"
 	"net"
 	"runtime"
-	"sync"
 	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 
 	"github.com/prometheus/blackbox_exporter/config"
-)
-
-var (
-	icmp_duration_rtt  []int
-	icmp_reply_ttl     []int
-	icmp_success_probe []int
-	locker             sync.Mutex
-	isSuccess          bool
-	icmp_aver_rtt      float32
-	icmp_aver_ttl      int
-	icmp_packet_loss   float32
-	icmp_jitterMax     float32 = 0
 )
 
 func get_icmp_meta() (int, uint16) {
@@ -59,136 +32,115 @@ func get_icmp_meta() (int, uint16) {
 	return icmpID, icmpSequence
 }
 
-func locking_fn(locked_var []int, appendix int) []int {
-	locker.Lock()
-	defer locker.Unlock()
-	locked_var = append(locked_var, appendix)
-	return locked_var
-}
-
 // Main func to initiate icmp probe or probes - depends on "packets" value.
-func ProbeICMP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) (success bool) {
-	var (
-		packets       int
-		wg            sync.WaitGroup
-		durationGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_rtt_milliseconds",
-			Help: "Round Trip Time (ms) for icmp probe",
-		})
+func ProbeICMP(ctx context.Context, target string, module config.Module, result *config.JSONstruct, logger log.Logger) (isSuccess bool) {
 
-		ttlGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_reply_ttl",
-			Help: "Replied packet hop limit for ipv6 (TTL for ipv4)",
-		})
-
-		packetLossGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_packet_loss",
-			Help: "Percent of lost packets or failed attempts (due to any reason)",
-		})
-		packetsGauge = prometheus.NewGauge((prometheus.GaugeOpts{
-			Name: "probe_icmp_packets",
-			Help: "How many packets are being send per query",
-		}))
-		jitterMaxGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_icmp_jitterMax",
-			Help: "Returns jitter between highest and lowest RTT in series (works only if packets are more than 1)",
-		})
-	)
-
-	dstIPAddr, _, err := chooseProtocol(ctx, module.ICMP.IPProtocol, module.ICMP.IPProtocolFallback, target, registry, logger)
+	dstIPAddr, _, err := chooseProtocol(ctx, module.ICMP.IPProtocol, module.ICMP.IPProtocolFallback, target, result, logger)
 
 	if err != nil {
 		level.Warn(logger).Log("msg", "Error resolving address", "err", err)
 		return false
 	}
 
-	packets = module.ICMP.Packets
-
-	registry.MustRegister(durationGauge)
-	registry.MustRegister(ttlGauge)
-	registry.MustRegister(packetLossGauge)
-	registry.MustRegister(packetsGauge)
-	if packets > 1 {
-		registry.MustRegister(jitterMaxGauge)
+	icmp_aver_rtt, icmp_aver_ttl, icmp_packet_loss, icmp_jitter, isSuccess := MultipleICMP(ctx, module, logger, dstIPAddr)
+	result.Probe_metrics = map[string]interface{}{
+		"Average_rtt":       icmp_aver_rtt,
+		"Average_ttl":       icmp_aver_ttl,
+		"Packet_loss":       icmp_packet_loss,
+		"Jitter":            icmp_jitter,
+		"Packets_per_query": module.ICMP.Packets,
+		"Delay_option_ms":   module.ICMP.Delay,
 	}
-
-	MultipleICMP(ctx, module, logger, &wg, dstIPAddr, packets)
-
-	durationGauge.Add(float64(icmp_aver_rtt))
-	ttlGauge.Add(float64(icmp_aver_ttl))
-	packetLossGauge.Add(float64(icmp_packet_loss))
-	packetsGauge.Add(float64(packets))
-	if packets > 1 {
-		jitterMaxGauge.Add(float64(icmp_jitterMax))
-	}
-
-	icmp_duration_rtt = nil
-	icmp_reply_ttl = nil
-	icmp_success_probe = nil
 
 	return isSuccess
 }
 
 // Handle few icmp probes concurrently and count packet loss percent
-func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr, packets int) {
+func MultipleICMP(ctx context.Context, module config.Module, logger log.Logger, dstIPAddr *net.IPAddr) (rtt float32, ttl int, loss int, jitter float32, success bool) {
 	var (
-		summ_value float32
-		len_values int
-		max_value  int = 0
-		min_value  int = 10000
+		summ_value    float32
+		rtt_slice     []float32
+		ttl_slice     []int
+		success_slice []int
+		max_value     float32 = 0
+		min_value     float32 = 0
+		packets       int
+		delay         int
+		probe_delay   int
 	)
+
+	packets = module.ICMP.Packets
+	delay = module.ICMP.Delay
+
+	icmp_duration_rtt := make(chan float32, packets)
+	icmp_reply_ttl := make(chan int, packets)
+	icmp_success_probe := make(chan int, packets)
 
 	// Run multiple probes (or just one)
 	for x := 0; x < packets; x++ {
-		wg.Add(1)
-		time.Sleep(time.Duration(x+1) * time.Millisecond)
-		go ProbeSingleICMP(ctx, module, logger, wg, dstIPAddr)
+		if delay > 0 {
+			probe_delay = delay
+		} else {
+			probe_delay = x
+		}
+		time.Sleep(time.Duration(probe_delay) * time.Millisecond)
+		level.Info(logger).Log("msg", "Start the goroutine #", x)
+		go ProbeSingleICMP(ctx, module, logger, dstIPAddr, icmp_duration_rtt, icmp_reply_ttl, icmp_success_probe)
 	}
 
-	// Start to calculate average value of packet loss + success for the probe at all
+	// Read values from channels
+	for i := 0; i < packets*3; i++ {
+		select {
+		case temp_rtt := <-icmp_duration_rtt:
+			rtt_slice = append(rtt_slice, temp_rtt)
+		case temp_ttl := <-icmp_reply_ttl:
+			ttl_slice = append(ttl_slice, temp_ttl)
+		case temp_success := <-icmp_success_probe:
+			success_slice = append(success_slice, temp_success)
+		}
+	}
+
+	// Calculate average value of rtt
 	summ_value = 0
-	len_values = len(icmp_success_probe)
-	for _, probe := range icmp_success_probe {
-		summ_value += float32(probe)
+	min_value = rtt_slice[0]
+	for _, local_rtt := range rtt_slice {
+		summ_value += local_rtt
+		if local_rtt > max_value {
+			max_value = local_rtt
+		}
+		if local_rtt < min_value {
+			min_value = local_rtt
+		}
+	}
+	rtt = summ_value / float32(packets)
+	// Calculate jitter
+	jitter = max_value - min_value
+
+	// Calculate average value of ttl on returned packets
+	summ_value = 0
+	for _, local_ttl := range ttl_slice {
+		summ_value += float32(local_ttl)
+	}
+	ttl = int(summ_value / float32(packets))
+
+	// Calculate average value of packet loss + success for the probe at all
+	summ_value = 0
+	for _, local_success := range success_slice {
+		summ_value += float32(local_success)
 	}
 	if summ_value > 0 {
-		isSuccess = true
-		icmp_packet_loss = 100 - summ_value/float32(len_values)*100
+		success = true
+		loss = int(100 - summ_value/float32(packets)*100)
 	} else {
-		isSuccess = false
-		icmp_packet_loss = 100
+		success = false
+		loss = 100
 	}
 
-	// Start to calculate average value of rtt
-	summ_value = 0
-	len_values = len(icmp_duration_rtt)
-	for _, rtt := range icmp_duration_rtt {
-		summ_value += float32(rtt)
-		if rtt > max_value {
-			max_value = rtt
-		}
-		if rtt < min_value {
-			min_value = rtt
-		}
-	}
-	icmp_aver_rtt = summ_value / float32(len_values)
-
-	// Start to calculate average value of ttl on returned packets
-	summ_value = 0
-	len_values = len(icmp_reply_ttl)
-	for _, ttl := range icmp_reply_ttl {
-		summ_value += float32(ttl)
-	}
-	icmp_aver_ttl = int(summ_value / float32(len_values))
-
-	// Start to calculate jitter
-	icmp_jitterMax = float32(max_value) - float32(min_value)
-
-	return
+	return rtt, ttl, loss, jitter, success
 }
 
 // Run single icmp probe
-func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logger, wg *sync.WaitGroup, dstIPAddr *net.IPAddr) {
+func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logger, dstIPAddr *net.IPAddr, rtt chan float32, ttl chan int, success chan int) {
 	var (
 		requestType     icmp.Type
 		replyType       icmp.Type
@@ -202,8 +154,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 	if len(module.ICMP.SourceIPAddress) > 0 {
 		if srcIP = net.ParseIP(module.ICMP.SourceIPAddress); srcIP == nil {
 			level.Error(logger).Log("msg", "Error parsing source ip address", "srcIP", module.ICMP.SourceIPAddress)
-			icmp_success_probe = locking_fn(icmp_success_probe, 0)
-			wg.Done()
+			rtt <- 0
+			ttl <- 0
+			success <- 0
 			return
 		}
 		level.Info(logger).Log("msg", "Using source address", "srcIP", srcIP)
@@ -237,8 +190,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 			icmpConn, err = icmp.ListenPacket("ip6:ipv6-icmp", srcIP.String())
 			if err != nil {
 				level.Error(logger).Log("msg", "Error listening to socket", "err", err)
-				icmp_success_probe = locking_fn(icmp_success_probe, 0)
-				wg.Done()
+				rtt <- 0
+				ttl <- 0
+				success <- 0
 				return
 			}
 		}
@@ -262,8 +216,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 			netConn, err := net.ListenPacket("ip4:icmp", srcIP.String())
 			if err != nil {
 				level.Error(logger).Log("msg", "Error listening to socket", "err", err)
-				icmp_success_probe = locking_fn(icmp_success_probe, 0)
-				wg.Done()
+				rtt <- 0
+				ttl <- 0
+				success <- 0
 				return
 			}
 			defer netConn.Close()
@@ -271,8 +226,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 			v4RawConn, err = ipv4.NewRawConn(netConn)
 			if err != nil {
 				level.Error(logger).Log("msg", "Error creating raw connection", "err", err)
-				icmp_success_probe = locking_fn(icmp_success_probe, 0)
-				wg.Done()
+				rtt <- 0
+				ttl <- 0
+				success <- 0
 				return
 			}
 			defer v4RawConn.Close()
@@ -295,8 +251,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 				icmpConn, err = icmp.ListenPacket("ip4:icmp", srcIP.String())
 				if err != nil {
 					level.Error(logger).Log("msg", "Error listening to socket", "err", err)
-					icmp_success_probe = locking_fn(icmp_success_probe, 0)
-					wg.Done()
+					rtt <- 0
+					ttl <- 0
+					success <- 0
 					return
 				}
 			}
@@ -337,8 +294,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 	wb, err := wm.Marshal(nil)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error marshalling packet", "err", err)
-		icmp_success_probe = locking_fn(icmp_success_probe, 0)
-		wg.Done()
+		rtt <- 0
+		ttl <- 0
+		success <- 0
 		return
 	}
 
@@ -381,8 +339,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 	}
 	if err != nil {
 		level.Warn(logger).Log("msg", "Error writing to socket", "err", err)
-		icmp_success_probe = locking_fn(icmp_success_probe, 0)
-		wg.Done()
+		rtt <- 0
+		ttl <- 0
+		success <- 0
 		return
 	}
 
@@ -397,8 +356,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 	wb, err = wm.Marshal(nil)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error marshalling packet", "err", err)
-		icmp_success_probe = locking_fn(icmp_success_probe, 0)
-		wg.Done()
+		rtt <- 0
+		ttl <- 0
+		success <- 0
 		return
 	}
 
@@ -418,8 +378,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 	}
 	if err != nil {
 		level.Error(logger).Log("msg", "Error setting socket deadline", "err", err)
-		icmp_success_probe = locking_fn(icmp_success_probe, 0)
-		wg.Done()
+		rtt <- 0
+		ttl <- 0
+		success <- 0
 		return
 	}
 	level.Info(logger).Log("msg", "Waiting for reply packets")
@@ -462,8 +423,9 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 		if err != nil {
 			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
 				level.Warn(logger).Log("msg", "Timeout reading from socket", "err", err)
-				icmp_success_probe = locking_fn(icmp_success_probe, 0)
-				wg.Done()
+				rtt <- 0
+				ttl <- 0
+				success <- 0
 				return
 			}
 			level.Error(logger).Log("msg", "Error reading from socket", "err", err)
@@ -484,13 +446,14 @@ func ProbeSingleICMP(ctx context.Context, module config.Module, logger log.Logge
 			rb[3] = 0
 		}
 		if bytes.Equal(rb[:n], wb) {
-			icmp_duration_rtt = locking_fn(icmp_duration_rtt, int(time.Since(rttStart).Milliseconds()))
+			rtt <- float32(time.Since(rttStart).Milliseconds())
 			if hopLimit >= 0 {
-				icmp_reply_ttl = locking_fn(icmp_reply_ttl, int(hopLimit))
+				ttl <- int(hopLimit)
+			} else {
+				ttl <- 0
 			}
 			level.Info(logger).Log("msg", "Found matching reply packet")
-			icmp_success_probe = locking_fn(icmp_success_probe, 1)
-			wg.Done()
+			success <- 1
 			return
 		}
 	}

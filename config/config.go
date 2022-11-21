@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -30,40 +29,25 @@ import (
 	"golang.org/x/text/language"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/alecthomas/units"
 	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/miekg/dns"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/config"
 )
 
 var (
-	configReloadSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "blackbox_exporter",
-		Name:      "config_last_reload_successful",
-		Help:      "Blackbox exporter config loaded successfully.",
-	})
-
-	configReloadSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "blackbox_exporter",
-		Name:      "config_last_reload_success_timestamp_seconds",
-		Help:      "Timestamp of the last successful configuration reload.",
-	})
-
 	// DefaultModule set default configuration for the Module
 	DefaultModule = Module{
-		HTTP: DefaultHTTPProbe,
+		//HTTP: DefaultHTTPProbe,
 		TCP:  DefaultTCPProbe,
 		ICMP: DefaultICMPProbe,
 		DNS:  DefaultDNSProbe,
 	}
 
-	// DefaultHTTPProbe set default value for HTTPProbe
+	/* DefaultHTTPProbe set default value for HTTPProbe
 	DefaultHTTPProbe = HTTPProbe{
 		IPProtocolFallback: true,
 		HTTPClientConfig:   config.DefaultHTTPClientConfig,
-	}
+	}*/
 
 	// DefaultGRPCProbe set default value for HTTPProbe
 	DefaultGRPCProbe = GRPCProbe{
@@ -77,12 +61,14 @@ var (
 	}
 
 	// DefaultICMPProbe set default value for ICMPProbe
-	DefaultICMPTTL   = 64
+	DefaultICMPTTL     = 64
 	DefualtICMPPackets = 1
-	DefaultICMPProbe = ICMPProbe{
+	DefualtDelay       = 1
+	DefaultICMPProbe   = ICMPProbe{
 		IPProtocolFallback: true,
 		TTL:                DefaultICMPTTL,
-		Packets:			DefualtICMPPackets,
+		Packets:            DefualtICMPPackets,
+		Delay:              DefualtDelay,
 	}
 
 	// DefaultDNSProbe set default value for DNSProbe
@@ -93,11 +79,6 @@ var (
 
 	caser = cases.Title(language.Und)
 )
-
-func init() {
-	prometheus.MustRegister(configReloadSuccess)
-	prometheus.MustRegister(configReloadSeconds)
-}
 
 type Config struct {
 	Modules map[string]Module `yaml:"modules"`
@@ -110,14 +91,6 @@ type SafeConfig struct {
 
 func (sc *SafeConfig) ReloadConfig(confFile string, logger log.Logger) (err error) {
 	var c = &Config{}
-	defer func() {
-		if err != nil {
-			configReloadSuccess.Set(0)
-		} else {
-			configReloadSuccess.Set(1)
-			configReloadSeconds.SetToCurrentTime()
-		}
-	}()
 
 	yamlReader, err := os.Open(confFile)
 	if err != nil {
@@ -129,17 +102,6 @@ func (sc *SafeConfig) ReloadConfig(confFile string, logger log.Logger) (err erro
 
 	if err = decoder.Decode(c); err != nil {
 		return fmt.Errorf("error parsing config file: %s", err)
-	}
-
-	for name, module := range c.Modules {
-		if module.HTTP.NoFollowRedirects != nil {
-			// Hide the old flag from the /config page.
-			module.HTTP.NoFollowRedirects = nil
-			c.Modules[name] = module
-			if logger != nil {
-				level.Warn(logger).Log("msg", "no_follow_redirects is deprecated and will be removed in the next release. It is replaced by follow_redirects.", "module", name)
-			}
-		}
 	}
 
 	sc.Lock()
@@ -197,25 +159,25 @@ func MustNewRegexp(s string) Regexp {
 }
 
 type JSONstruct struct {
-	proberJSON      string                 `json:"Prober"`
-	success         int                    `json:"Success"`
-	duration        int                    `json:"ProbeDuration,omitempty"`
-	dns_lookup_time float64                `json:"DNSLookupTime,omitempty"`
-	probe_protocol  int                    `json:"ProbeProtocol,omitempty"`
-	probe_metrics   map[string]interface{} `json:"ProbeMetrics"`
+	Prober          string                 `json:"Prober"`
+	Success         int                    `json:"Success"`
+	Duration        float64                `json:"ProbeDuration,omitempty"`
+	Dns_lookup_time float64                `json:"DNSLookupTime,omitempty"`
+	Probe_protocol  int                    `json:"ProbeProtocol,omitempty"`
+	Probe_metrics   map[string]interface{} `json:"ProbeMetrics"`
 }
 
 type Module struct {
 	Prober  string        `yaml:"prober,omitempty"`
 	Timeout time.Duration `yaml:"timeout,omitempty"`
-	HTTP    HTTPProbe     `yaml:"http,omitempty"`
-	TCP     TCPProbe      `yaml:"tcp,omitempty"`
-	ICMP    ICMPProbe     `yaml:"icmp,omitempty"`
-	DNS     DNSProbe      `yaml:"dns,omitempty"`
-	GRPC    GRPCProbe     `yaml:"grpc,omitempty"`
+	//HTTP    HTTPProbe     `yaml:"http,omitempty"`
+	TCP  TCPProbe  `yaml:"tcp,omitempty"`
+	ICMP ICMPProbe `yaml:"icmp,omitempty"`
+	DNS  DNSProbe  `yaml:"dns,omitempty"`
+	GRPC GRPCProbe `yaml:"grpc,omitempty"`
 }
 
-type HTTPProbe struct {
+/*type HTTPProbe struct {
 	// Defaults to 2xx.
 	ValidStatusCodes             []int                   `yaml:"valid_status_codes,omitempty"`
 	ValidHTTPVersions            []string                `yaml:"valid_http_versions,omitempty"`
@@ -234,7 +196,7 @@ type HTTPProbe struct {
 	HTTPClientConfig             config.HTTPClientConfig `yaml:"http_client_config,inline"`
 	Compression                  string                  `yaml:"compression,omitempty"`
 	BodySizeLimit                units.Base2Bytes        `yaml:"body_size_limit,omitempty"`
-}
+}*/
 
 type GRPCProbe struct {
 	Service             string           `yaml:"service,omitempty"`
@@ -273,6 +235,7 @@ type ICMPProbe struct {
 	DontFragment       bool   `yaml:"dont_fragment,omitempty"`
 	TTL                int    `yaml:"ttl,omitempty"`
 	Packets            int    `yaml:"packets,omitempty"`
+	Delay              int    `yaml:"delay,omitempty"`
 }
 
 type DNSProbe struct {
@@ -319,7 +282,7 @@ func (s *Module) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
-func (s *HTTPProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
+/*func (s *HTTPProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	*s = DefaultHTTPProbe
 	type plain HTTPProbe
 	if err := unmarshal((*plain)(s)); err != nil {
@@ -354,7 +317,7 @@ func (s *HTTPProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 
 	return nil
-}
+}*/
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (s *GRPCProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -432,6 +395,12 @@ func (s *ICMPProbe) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 	if s.Packets > 30 {
 		return errors.New("\"packets\" cannot exceed 30")
+	}
+	if s.Delay < 1 {
+		return errors.New("\"delay\" cannot be less than 1ms")
+	}
+	if s.Delay > 200 {
+		return errors.New("\"delay\" cannot be more than 200ms")
 	}
 	return nil
 }

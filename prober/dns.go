@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -22,7 +21,6 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/miekg/dns"
-	"github.com/prometheus/client_golang/prometheus"
 	pconfig "github.com/prometheus/common/config"
 
 	"github.com/prometheus/blackbox_exporter/config"
@@ -124,33 +122,17 @@ func validRcode(rcode int, valid []string, logger log.Logger) bool {
 	return false
 }
 
-func ProbeDNS(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) bool {
-	var dialProtocol string
-	probeDNSDurationGaugeVec := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "probe_dns_duration_seconds",
-		Help: "Duration of DNS request by phase",
-	}, []string{"phase"})
-	probeDNSAnswerRRSGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_dns_answer_rrs",
-		Help: "Returns number of entries in the answer resource record list",
-	})
-	probeDNSAuthorityRRSGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_dns_authority_rrs",
-		Help: "Returns number of entries in the authority resource record list",
-	})
-	probeDNSAdditionalRRSGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_dns_additional_rrs",
-		Help: "Returns number of entries in the additional resource record list",
-	})
-
-	for _, lv := range []string{"resolve", "connect", "request"} {
-		probeDNSDurationGaugeVec.WithLabelValues(lv)
-	}
-
-	registry.MustRegister(probeDNSDurationGaugeVec)
-	registry.MustRegister(probeDNSAnswerRRSGauge)
-	registry.MustRegister(probeDNSAuthorityRRSGauge)
-	registry.MustRegister(probeDNSAdditionalRRSGauge)
+func ProbeDNS(ctx context.Context, target string, module config.Module, some_json *config.JSONstruct, logger log.Logger) bool {
+	var (
+		dialProtocol     string
+		Duration_resolve float64
+		Duration_connect float64
+		Duration_request float64
+		Answer_rss       int
+		Authority_rss    int
+		Additional_rss   int
+		SerialOfNS       uint32
+	)
 
 	qc := uint16(dns.ClassINET)
 	if module.DNS.QueryClass != "" {
@@ -171,7 +153,6 @@ func ProbeDNS(ctx context.Context, target string, module config.Module, registry
 			return false
 		}
 	}
-	var probeDNSSOAGauge prometheus.Gauge
 
 	var ip *net.IPAddr
 	if module.DNS.TransportProtocol == "" {
@@ -192,12 +173,12 @@ func ProbeDNS(ctx context.Context, target string, module config.Module, registry
 		}
 		targetAddr = target
 	}
-	ip, lookupTime, err := chooseProtocol(ctx, module.DNS.IPProtocol, module.DNS.IPProtocolFallback, targetAddr, registry, logger)
+	ip, lookupTime, err := chooseProtocol(ctx, module.DNS.IPProtocol, module.DNS.IPProtocolFallback, targetAddr, some_json, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error resolving address", "err", err)
 		return false
 	}
-	probeDNSDurationGaugeVec.WithLabelValues("resolve").Add(lookupTime)
+	Duration_resolve = lookupTime
 	targetIP := net.JoinHostPort(ip.String(), port)
 
 	if ip.IP.To4() == nil {
@@ -263,30 +244,35 @@ func ProbeDNS(ctx context.Context, target string, module config.Module, registry
 	// exchange messages with the server _after_ the connection is created.
 	// We compute the connection time as the total time for the operation
 	// minus the time for the actual request rtt.
-	probeDNSDurationGaugeVec.WithLabelValues("connect").Set((time.Since(requestStart) - rtt).Seconds())
-	probeDNSDurationGaugeVec.WithLabelValues("request").Set(rtt.Seconds())
+	Duration_connect = (time.Since(requestStart) - rtt).Seconds()
+	Duration_request = rtt.Seconds()
 	if err != nil {
 		level.Error(logger).Log("msg", "Error while sending a DNS query", "err", err)
 		return false
 	}
 	level.Info(logger).Log("msg", "Got response", "response", response)
 
-	probeDNSAnswerRRSGauge.Set(float64(len(response.Answer)))
-	probeDNSAuthorityRRSGauge.Set(float64(len(response.Ns)))
-	probeDNSAdditionalRRSGauge.Set(float64(len(response.Extra)))
+	Answer_rss = len(response.Answer)
+	Authority_rss = len(response.Ns)
+	Additional_rss = len(response.Extra)
 
 	if qt == dns.TypeSOA {
-		probeDNSSOAGauge = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "probe_dns_serial",
-			Help: "Returns the serial number of the zone",
-		})
-		registry.MustRegister(probeDNSSOAGauge)
 
 		for _, a := range response.Answer {
 			if soa, ok := a.(*dns.SOA); ok {
-				probeDNSSOAGauge.Set(float64(soa.Serial))
+				SerialOfNS = soa.Serial
 			}
 		}
+	}
+
+	some_json.Probe_metrics = map[string]interface{}{
+		"Duration_resolve":   Duration_resolve,
+		"Duration_connect":   Duration_connect,
+		"Duration_request":   Duration_request,
+		"Answer_rss":         Answer_rss,
+		"Authority_rss":      Authority_rss,
+		"Additional_rss":     Additional_rss,
+		"SerialOfNameServer": SerialOfNS,
 	}
 
 	if !validRcode(response.Rcode, module.DNS.ValidRcodes, logger) {

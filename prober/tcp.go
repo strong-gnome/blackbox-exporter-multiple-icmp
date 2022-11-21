@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -22,13 +21,12 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/prometheus/client_golang/prometheus"
 	pconfig "github.com/prometheus/common/config"
 
 	"github.com/prometheus/blackbox_exporter/config"
 )
 
-func dialTCP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) (net.Conn, error) {
+func dialTCP(ctx context.Context, target string, module config.Module, some_json *config.JSONstruct, logger log.Logger) (net.Conn, error) {
 	var dialProtocol, dialTarget string
 	dialer := &net.Dialer{}
 	targetAddress, port, err := net.SplitHostPort(target)
@@ -37,7 +35,7 @@ func dialTCP(ctx context.Context, target string, module config.Module, registry 
 		return nil, err
 	}
 
-	ip, _, err := chooseProtocol(ctx, module.TCP.IPProtocol, module.TCP.IPProtocolFallback, targetAddress, registry, logger)
+	ip, _, err := chooseProtocol(ctx, module.TCP.IPProtocol, module.TCP.IPProtocolFallback, targetAddress, some_json, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error resolving address", "err", err)
 		return nil, err
@@ -88,37 +86,11 @@ func dialTCP(ctx context.Context, target string, module config.Module, registry 
 	return tls.DialWithDialer(dialer, dialProtocol, dialTarget, tlsConfig)
 }
 
-func ProbeTCP(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) bool {
-	probeSSLEarliestCertExpiry := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_ssl_earliest_cert_expiry",
-		Help: "Returns earliest SSL cert expiry date",
-	})
-	probeSSLLastChainExpiryTimestampSeconds := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_ssl_last_chain_expiry_timestamp_seconds",
-		Help: "Returns last SSL chain expiry in unixtime",
-	})
-	probeSSLLastInformation := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "probe_ssl_last_chain_info",
-			Help: "Contains SSL leaf certificate information",
-		},
-		[]string{"fingerprint_sha256"},
-	)
-	probeTLSVersion := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "probe_tls_version_info",
-			Help: "Returns the TLS version used, or NaN when unknown",
-		},
-		[]string{"version"},
-	)
-	probeFailedDueToRegex := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_failed_due_to_regex",
-		Help: "Indicates if probe failed due to regex",
-	})
-	registry.MustRegister(probeFailedDueToRegex)
+func ProbeTCP(ctx context.Context, target string, module config.Module, some_json *config.JSONstruct, logger log.Logger) bool {
+
 	deadline, _ := ctx.Deadline()
 
-	conn, err := dialTCP(ctx, target, module, registry, logger)
+	conn, err := dialTCP(ctx, target, module, some_json, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error dialing TCP", "err", err)
 		return false
@@ -135,16 +107,22 @@ func ProbeTCP(ctx context.Context, target string, module config.Module, registry
 	}
 	if module.TCP.TLS {
 		state := conn.(*tls.Conn).ConnectionState()
-		registry.MustRegister(probeSSLEarliestCertExpiry, probeTLSVersion, probeSSLLastChainExpiryTimestampSeconds, probeSSLLastInformation)
-		probeSSLEarliestCertExpiry.Set(float64(getEarliestCertExpiry(&state).Unix()))
-		probeTLSVersion.WithLabelValues(getTLSVersion(&state)).Set(1)
-		probeSSLLastChainExpiryTimestampSeconds.Set(float64(getLastChainExpiry(&state).Unix()))
-		probeSSLLastInformation.WithLabelValues(getFingerprint(&state)).Set(1)
+		Earliest_cert_expiry_date := float64(getEarliestCertExpiry(&state).Unix())
+		TLS_ver := getTLSVersion(&state)
+		Last_chain_expiry_timestamp := float64(getLastChainExpiry(&state).Unix())
+		Leaf_cert_info := getFingerprint(&state)
+		some_json.Probe_metrics = map[string]interface{}{
+			"Earliest_cert_expiry_date":   Earliest_cert_expiry_date,
+			"TLS_ver":                     TLS_ver,
+			"Last_chain_expiry_timestamp": Last_chain_expiry_timestamp,
+			"Leaf_cert_info":              Leaf_cert_info,
+		}
 	}
 	scanner := bufio.NewScanner(conn)
 	for i, qr := range module.TCP.QueryResponse {
 		level.Info(logger).Log("msg", "Processing query response entry", "entry_number", i)
 		send := qr.Send
+		Failed_regex := "No_regex_check_passed"
 		if qr.Expect.Regexp != nil {
 			var match []int
 			// Read lines until one of them matches the configured regexp.
@@ -161,11 +139,11 @@ func ProbeTCP(ctx context.Context, target string, module config.Module, registry
 				return false
 			}
 			if match == nil {
-				probeFailedDueToRegex.Set(1)
+				Failed_regex = "true"
 				level.Error(logger).Log("msg", "Regexp did not match", "regexp", qr.Expect.Regexp, "line", scanner.Text())
 				return false
 			}
-			probeFailedDueToRegex.Set(0)
+			Failed_regex = "false"
 			send = string(qr.Expect.Regexp.Expand(nil, []byte(send), scanner.Bytes(), match))
 		}
 		if send != "" {
@@ -201,11 +179,17 @@ func ProbeTCP(ctx context.Context, target string, module config.Module, registry
 
 			// Get certificate expiry.
 			state := tlsConn.ConnectionState()
-			registry.MustRegister(probeSSLEarliestCertExpiry, probeSSLLastChainExpiryTimestampSeconds)
-			probeSSLEarliestCertExpiry.Set(float64(getEarliestCertExpiry(&state).Unix()))
-			probeTLSVersion.WithLabelValues(getTLSVersion(&state)).Set(1)
-			probeSSLLastChainExpiryTimestampSeconds.Set(float64(getLastChainExpiry(&state).Unix()))
-			probeSSLLastInformation.WithLabelValues(getFingerprint(&state)).Set(1)
+			Earliest_cert_expiry_date := float64(getEarliestCertExpiry(&state).Unix())
+			TLS_ver := getTLSVersion(&state)
+			Last_chain_expiry_timestamp := float64(getLastChainExpiry(&state).Unix())
+			Leaf_cert_info := getFingerprint(&state)
+			some_json.Probe_metrics = map[string]interface{}{
+				"Earliest_cert_expiry_date":   Earliest_cert_expiry_date,
+				"TLS_ver":                     TLS_ver,
+				"Last_chain_expiry_timestamp": Last_chain_expiry_timestamp,
+				"Leaf_cert_info":              Leaf_cert_info,
+				"Failed_regex":                Failed_regex,
+			}
 		}
 	}
 	return true

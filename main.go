@@ -1,4 +1,3 @@
-// Copyright 2016 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,6 +15,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net"
@@ -33,21 +33,16 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/blackbox_exporter/config"
+	"github.com/prometheus/blackbox_exporter/prober"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"gopkg.in/yaml.v3"
-
-	"github.com/prometheus/blackbox_exporter/config"
-	"github.com/prometheus/blackbox_exporter/prober"
 )
 
 var (
@@ -65,52 +60,36 @@ var (
 	routePrefix   = kingpin.Flag("web.route-prefix", "Prefix for the internal routes of web endpoints. Defaults to path of --web.external-url.").PlaceHolder("<path>").String()
 
 	Probers = map[string]prober.ProbeFn{
-		"http": prober.ProbeHTTP,
+		//"http": prober.ProbeHTTP,
 		"tcp":  prober.ProbeTCP,
 		"icmp": prober.ProbeICMP,
 		"dns":  prober.ProbeDNS,
 		"grpc": prober.ProbeGRPC,
 	}
 
-	moduleUnknownCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "blackbox_module_unknown_total",
-		Help: "Count of unknown modules requested by probes",
-	})
-
-	caser = cases.Title(language.Und)
+	//caser = cases.Title(language.Und)
 )
 
 func probeHandler(w http.ResponseWriter, r *http.Request, c *config.Config, logger log.Logger, rh *resultHistory) {
+	var json_result config.JSONstruct
 	moduleName := r.URL.Query().Get("module")
 	if moduleName == "" {
-		moduleName = "http_2xx"
+		moduleName = "icmp"
 	}
 	module, ok := c.Modules[moduleName]
 	if !ok {
 		http.Error(w, fmt.Sprintf("Unknown module %q", moduleName), http.StatusBadRequest)
 		level.Debug(logger).Log("msg", "Unknown module", "module", moduleName)
-		moduleUnknownCounter.Add(1)
 		return
 	}
 
-	timeoutSeconds, err := getTimeout(r, module, *timeoutOffset)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse timeout from Prometheus header: %s", err), http.StatusInternalServerError)
-		return
-	}
+	json_result.Prober = moduleName
+
+	timeoutSeconds, _ := getTimeout(module, *timeoutOffset)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSeconds*float64(time.Second)))
 	defer cancel()
 	r = r.WithContext(ctx)
-
-	probeSuccessGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_success",
-		Help: "Displays whether or not the probe was a success",
-	})
-	probeDurationGauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "probe_duration_seconds",
-		Help: "Returns how long the probe took to complete in seconds",
-	})
 
 	params := r.URL.Query()
 	target := params.Get("target")
@@ -125,46 +104,54 @@ func probeHandler(w http.ResponseWriter, r *http.Request, c *config.Config, logg
 		return
 	}
 
-	hostname := params.Get("hostname")
+	/*hostname := params.Get("hostname")
 	if module.Prober == "http" && hostname != "" {
 		err = setHTTPHost(hostname, &module)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-	}
+	}*/
 
 	sl := newScrapeLogger(logger, moduleName, target)
 	level.Info(sl).Log("msg", "Beginning probe", "probe", module.Prober, "timeout_seconds", timeoutSeconds)
 
 	start := time.Now()
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(probeSuccessGauge)
-	registry.MustRegister(probeDurationGauge)
-	success := prober(ctx, target, module, registry, sl)
+	success := prober(ctx, target, module, &json_result, sl)
 	duration := time.Since(start).Seconds()
-	probeDurationGauge.Set(duration)
+	json_result.Duration = duration
 	if success {
-		probeSuccessGauge.Set(1)
+		json_result.Success = 1
 		level.Info(sl).Log("msg", "Probe succeeded", "duration_seconds", duration)
 	} else {
+		json_result.Success = 0
 		level.Error(sl).Log("msg", "Probe failed", "duration_seconds", duration)
 	}
 
-	debugOutput := DebugOutput(&module, &sl.buffer, registry)
+	data_json, err := json.MarshalIndent(json_result, "", "	")
+	if err != nil {
+		level.Error(sl).Log("msg", "JSON marshalling failed", err)
+		return
+	}
+
+	debugOutput := DebugOutput(&module, &sl.buffer, data_json)
 	rh.Add(moduleName, target, debugOutput, success)
 
 	if r.URL.Query().Get("debug") == "true" {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(debugOutput))
 		return
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data_json)
+		return
 	}
 
-	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
-	h.ServeHTTP(w, r)
+	//h := promhttp.HandlerFor(data_json, promhttp.HandlerOpts{})
+	//h.ServeHTTP(w, r)
 }
 
-func setHTTPHost(hostname string, module *config.Module) error {
+/*func setHTTPHost(hostname string, module *config.Module) error {
 	// By creating a new hashmap and copying values there we
 	// ensure that the initial configuration remain intact.
 	headers := make(map[string]string)
@@ -179,7 +166,7 @@ func setHTTPHost(hostname string, module *config.Module) error {
 	headers["Host"] = hostname
 	module.HTTP.Headers = headers
 	return nil
-}
+}*/
 
 type scrapeLogger struct {
 	next         log.Logger
@@ -212,18 +199,19 @@ func (sl scrapeLogger) Log(keyvals ...interface{}) error {
 }
 
 // DebugOutput returns plaintext debug output for a probe.
-func DebugOutput(module *config.Module, logBuffer *bytes.Buffer, registry *prometheus.Registry) string {
+func DebugOutput(module *config.Module, logBuffer *bytes.Buffer, data_json []byte) string {
 	buf := &bytes.Buffer{}
 	fmt.Fprintf(buf, "Logs for the probe:\n")
 	logBuffer.WriteTo(buf)
-	fmt.Fprintf(buf, "\n\n\nMetrics that would have been returned:\n")
-	mfs, err := registry.Gather()
+	fmt.Fprintf(buf, "\n\n\n JSON with metrics that would have been returned:\n")
+	fmt.Fprintf(buf, string(data_json))
+	/*mfs, err := registry.Gather()
 	if err != nil {
 		fmt.Fprintf(buf, "Error gathering metrics: %s\n", err)
 	}
 	for _, mf := range mfs {
 		expfmt.MetricFamilyToText(buf, mf)
-	}
+	}*/
 	fmt.Fprintf(buf, "\n\n\nModule configuration:\n")
 	c, err := yaml.Marshal(module)
 	if err != nil {
@@ -232,11 +220,6 @@ func DebugOutput(module *config.Module, logBuffer *bytes.Buffer, registry *prome
 	buf.Write(c)
 
 	return buf.String()
-}
-
-func init() {
-	prometheus.MustRegister(version.NewCollector("blackbox_exporter"))
-	prometheus.MustRegister(moduleUnknownCounter)
 }
 
 func main() {
@@ -433,15 +416,8 @@ func run() int {
 
 }
 
-func getTimeout(r *http.Request, module config.Module, offset float64) (timeoutSeconds float64, err error) {
-	// If a timeout is configured via the Prometheus header, add it to the request.
-	if v := r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds"); v != "" {
-		var err error
-		timeoutSeconds, err = strconv.ParseFloat(v, 64)
-		if err != nil {
-			return 0, err
-		}
-	}
+func getTimeout(module config.Module, offset float64) (timeoutSeconds float64, err error) {
+
 	if timeoutSeconds == 0 {
 		timeoutSeconds = 10
 	}

@@ -1,4 +1,3 @@
-// Copyright 2021 The Prometheus Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,10 +14,14 @@ package prober
 
 import (
 	"context"
+	"net"
+	"net/url"
+	"strings"
+	"time"
+
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/blackbox_exporter/config"
-	"github.com/prometheus/client_golang/prometheus"
 	pconfig "github.com/prometheus/common/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -27,10 +30,6 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"net"
-	"net/url"
-	"strings"
-	"time"
 )
 
 type GRPCHealthCheck interface {
@@ -74,9 +73,9 @@ func (c *gRPCHealthCheckClient) Check(ctx context.Context, service string) (bool
 	return false, returnStatus.Code(), nil, "", err
 }
 
-func ProbeGRPC(ctx context.Context, target string, module config.Module, registry *prometheus.Registry, logger log.Logger) (success bool) {
+func ProbeGRPC(ctx context.Context, target string, module config.Module, some_json *config.JSONstruct, logger log.Logger) (success bool) {
 
-	var (
+	/*var (
 		durationGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "probe_grpc_duration_seconds",
 			Help: "Duration of gRPC request by phase",
@@ -108,18 +107,14 @@ func ProbeGRPC(ctx context.Context, target string, module config.Module, registr
 		},
 			[]string{"version"},
 		)
-	)
+	)*/
 
-	for _, lv := range []string{"resolve"} {
-		durationGaugeVec.WithLabelValues(lv)
-	}
-
-	registry.MustRegister(durationGaugeVec)
+	/*registry.MustRegister(durationGaugeVec)
 	registry.MustRegister(isSSLGauge)
 	registry.MustRegister(statusCodeGauge)
 	registry.MustRegister(healthCheckResponseGaugeVec)
 	registry.MustRegister(probeSSLEarliestCertExpiryGauge)
-	registry.MustRegister(probeTLSVersion)
+	registry.MustRegister(probeTLSVersion)*/
 
 	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
 		target = "http://" + target
@@ -143,12 +138,11 @@ func ProbeGRPC(ctx context.Context, target string, module config.Module, registr
 		return false
 	}
 
-	ip, lookupTime, err := chooseProtocol(ctx, module.GRPC.PreferredIPProtocol, module.GRPC.IPProtocolFallback, targetHost, registry, logger)
+	ip, _, err := chooseProtocol(ctx, module.GRPC.PreferredIPProtocol, module.GRPC.IPProtocolFallback, targetHost, some_json, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error resolving address", "err", err)
 		return false
 	}
-	durationGaugeVec.WithLabelValues("resolve").Add(lookupTime)
 	checkStart := time.Now()
 	if len(tlsConfig.ServerName) == 0 {
 		// If there is no `server_name` in tls_config, use
@@ -187,26 +181,26 @@ func ProbeGRPC(ctx context.Context, target string, module config.Module, registr
 	client := NewGrpcHealthCheckClient(conn)
 	defer conn.Close()
 	ok, statusCode, serverPeer, servingStatus, err := client.Check(context.Background(), module.GRPC.Service)
-	durationGaugeVec.WithLabelValues("check").Add(time.Since(checkStart).Seconds())
+	Duration_check := time.Since(checkStart).Seconds()
 
-	for servingStatusName, _ := range grpc_health_v1.HealthCheckResponse_ServingStatus_value {
-		healthCheckResponseGaugeVec.WithLabelValues(servingStatusName).Set(float64(0))
-	}
+	HealthCheckResponse_status := "NaN"
 	if servingStatus != "" {
-		healthCheckResponseGaugeVec.WithLabelValues(servingStatus).Set(float64(1))
+		HealthCheckResponse_status = servingStatus
 	}
+
+	SSL_earliest_cert_expiry := float64(0)
+	IsSSL := float64(0)
+	TLS_ver := "unknown"
 
 	if serverPeer != nil {
 		tlsInfo, tlsOk := serverPeer.AuthInfo.(credentials.TLSInfo)
 		if tlsOk {
-			isSSLGauge.Set(float64(1))
-			probeSSLEarliestCertExpiryGauge.Set(float64(getEarliestCertExpiry(&tlsInfo.State).Unix()))
-			probeTLSVersion.WithLabelValues(getTLSVersion(&tlsInfo.State)).Set(1)
-		} else {
-			isSSLGauge.Set(float64(0))
+			IsSSL = 1
+			SSL_earliest_cert_expiry = float64(getEarliestCertExpiry(&tlsInfo.State).Unix())
+			TLS_ver = getTLSVersion(&tlsInfo.State)
 		}
 	}
-	statusCodeGauge.Set(float64(statusCode))
+	StatusCode := int(statusCode)
 
 	if !ok || err != nil {
 		level.Error(logger).Log("msg", "can't connect grpc server:", "err", err)
@@ -215,6 +209,13 @@ func ProbeGRPC(ctx context.Context, target string, module config.Module, registr
 		level.Debug(logger).Log("connect the grpc server successfully")
 		success = true
 	}
-
+	some_json.Probe_metrics = map[string]interface{}{
+		"Duration_check":             Duration_check,
+		"IsSSL":                      IsSSL,
+		"StatusCode":                 StatusCode,
+		"HealthCheckResponse_status": HealthCheckResponse_status,
+		"SSL_earliest_cert_expiry":   SSL_earliest_cert_expiry,
+		"TLS_ver":                    TLS_ver,
+	}
 	return
 }
